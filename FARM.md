@@ -12,6 +12,12 @@ an OCI source/revision label, SBOM and build provenance. Update the Node digest
 deliberately when a new supported base is selected. Package upgrades do not
 replace application dependency maintenance or vulnerability review.
 
+npm is pinned to 12.2.2 in the common base and checked by CI. Dependency install
+scripts are denied by default. Only the reviewed `sqlite3@6.0.1` native installer
+is permitted; unused optional/watch and donation scripts are explicitly denied.
+Both backend and frontend use `npm ci --strict-allow-scripts`, so new unreviewed
+installation hooks fail the build rather than executing automatically.
+
 Published images:
 
 - `ghcr.io/sasue/flame:sha-<full commit>`: tested commit for both architectures.
@@ -20,7 +26,15 @@ Published images:
 Production should use the verified commit tag or digest. The `latest` tag is a
 convenience pointer, not a guarantee of security. Each architecture includes a
 Trivy report for HIGH/CRITICAL findings. Reports must be reviewed before
-deployment; the initial pipeline reports findings without silently ignoring them.
+deployment. Any CRITICAL finding blocks publication of the multiarch manifest
+and `latest`; the full scan reports are retained as workflow artifacts.
+
+Each architecture tests login/JWT, rejection of unauthenticated writes, private
+app visibility, SQLite-backed app/category/bookmark CRUD, multipart icon uploads,
+and the actual current Kubernetes client against a credential-free local mock.
+The Kubernetes mock uses HTTP only on loopback inside the disposable container;
+production in-cluster TLS verification is unchanged. The runtime is also checked
+for UID 1000, lack of a Docker socket, and the expected source revision.
 
 The runtime uses UID/GID 1000 and a HTTP healthcheck. The persistent data directory
 must be writable by that account. No root startup `chown` is performed. Docker
