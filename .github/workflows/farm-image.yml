@@ -69,6 +69,7 @@ jobs:
             if docker exec flame-smoke node -e "fetch('http://127.0.0.1:5005/').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"; then
               break
             fi
+            test "$(docker inspect flame-smoke --format '{{.State.Running}}')" = true
             sleep 2
           done
           docker exec flame-smoke node -e "if(process.getuid()!==1000 || require('fs').existsSync('/var/run/docker.sock'))process.exit(1);fetch('http://127.0.0.1:5005/').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"

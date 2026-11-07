@@ -11,6 +11,8 @@ RUN echo "APT refresh: ${APT_REFRESH}" \
     && rm -rf /var/lib/apt/lists/*
 
 FROM patched-base AS builder
+ARG APP_VERSION=2.4.0
+ENV REACT_APP_VERSION=${APP_VERSION}
 WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ \
@@ -28,11 +30,13 @@ RUN mkdir -p public data \
 
 FROM patched-base AS runtime
 WORKDIR /app
-ENV NODE_ENV=production
+ARG APP_VERSION=2.4.0
+ENV NODE_ENV=production VERSION=${APP_VERSION}
 COPY --from=builder --chown=node:node /app /app
 ARG VCS_REF
 LABEL org.opencontainers.image.source="https://github.com/SaSue/flame" \
       org.opencontainers.image.revision="${VCS_REF}" \
+      org.opencontainers.image.version="${APP_VERSION}" \
       org.opencontainers.image.base.name="node:24-trixie-slim" \
       org.opencontainers.image.base.digest="sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d"
 USER node
