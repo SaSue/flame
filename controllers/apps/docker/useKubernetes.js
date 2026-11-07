@@ -1,5 +1,4 @@
 const App = require('../../../models/App');
-const k8s = require('@kubernetes/client-node');
 const Logger = require('../../../utils/Logger');
 const logger = new Logger();
 const loadConfig = require('../../../utils/loadConfig');
@@ -10,11 +9,13 @@ const useKubernetes = async (apps) => {
   let ingresses = null;
 
   try {
+    // Current Kubernetes clients are ESM and return the response body directly.
+    const k8s = await import('@kubernetes/client-node');
     const kc = new k8s.KubeConfig();
     kc.loadFromCluster();
     const k8sNetworkingV1Api = kc.makeApiClient(k8s.NetworkingV1Api);
     await k8sNetworkingV1Api.listIngressForAllNamespaces().then((res) => {
-      ingresses = res.body.items;
+      ingresses = res.items;
     });
   } catch {
     logger.log("Can't connect to the Kubernetes API", 'ERROR');
@@ -26,7 +27,8 @@ const useKubernetes = async (apps) => {
     });
 
     ingresses = ingresses.filter(
-      (e) => Object.keys(e.metadata.annotations).length !== 0
+      (e) => e.metadata && e.metadata.annotations &&
+        Object.keys(e.metadata.annotations).length !== 0
     );
 
     const kubernetesApps = [];

@@ -1,5 +1,6 @@
 ARG NODE_IMAGE=node:24-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17e6108a36988cf374899cd057eb3812d
 FROM ${NODE_IMAGE} AS patched-base
+ARG NPM_VERSION=12.2.2
 
 # CI changes APT_REFRESH for every run, including retries, so package updates
 # are actually executed rather than reusing an old Docker build layer.
@@ -8,7 +9,9 @@ RUN echo "APT refresh: ${APT_REFRESH}" \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get -y full-upgrade \
     && apt-get install -y --no-install-recommends ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global --ignore-scripts --no-audit --no-fund "npm@${NPM_VERSION}" \
+    && npm cache clean --force
 
 FROM patched-base AS builder
 ARG APP_VERSION=2.4.0

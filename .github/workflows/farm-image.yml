@@ -74,6 +74,8 @@ jobs:
           done
           docker exec flame-smoke node -e "if(process.getuid()!==1000 || require('fs').existsSync('/var/run/docker.sock'))process.exit(1);fetch('http://127.0.0.1:5005/').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"
           docker exec flame-smoke node --version
+          test "$(docker exec flame-smoke npm --version)" = "12.2.2"
+          docker exec flame-smoke node scripts/ci-integration.js
       - name: Scan complete image (report, not a security guarantee)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
@@ -105,6 +107,16 @@ jobs:
           path: |
             digests/*
             trivy-${{ matrix.arch }}.json
+      - name: Reject images with critical vulnerability findings
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          python3 - <<'PYSCAN'
+          import json,os,pathlib
+          report=json.loads(pathlib.Path('trivy-'+os.environ['ARCH']+'.json').read_text())
+          critical=[v for r in report.get('Results',[]) for v in r.get('Vulnerabilities',[]) if v['Severity']=='CRITICAL']
+          assert not critical, 'Critical vulnerability findings: '+str([(v['PkgName'],v['VulnerabilityID']) for v in critical])
+          PYSCAN
   publish:
     needs: build
     runs-on: ubuntu-24.04
