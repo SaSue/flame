@@ -44,7 +44,7 @@ async function main() {
   const category = await request('/api/categories', { method: 'POST', body: { name: 'CI category' }, status: 201 });
   const bookmark = await request('/api/bookmarks', { method: 'POST', body: { name: 'CI bookmark', url: 'https://example.test/bookmark', categoryId: category.id }, status: 201 });
   assert.ok((await request('/api/bookmarks')).some(b => b.id === bookmark.id));
-  await request(`/api/bookmarks/${bookmark.id}`, { method: 'PUT', body: { name: 'CI bookmark updated' } });
+  await request(`/api/bookmarks/${bookmark.id}`, { method: 'PUT', body: { name: 'CI bookmark updated', categoryId: category.id, url: bookmark.url } });
   const categories = await request('/api/categories');
   assert.equal(categories.find(c => c.id === category.id).bookmarks[0].name, 'CI bookmark updated');
   await request(`/api/bookmarks/${bookmark.id}`, { method: 'DELETE' });
@@ -61,7 +61,9 @@ async function main() {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   try {
     const kc = new k8s.KubeConfig();
-    kc.loadFromOptions({ clusters: [{ name: 'ci', server: `http://127.0.0.1:${server.address().port}` }], users: [{ name: 'ci' }], contexts: [{ name: 'ci', cluster: 'ci', user: 'ci' }], currentContext: 'ci' });
+    // The SDK requires this opt-in for the isolated, credential-free HTTP mock.
+    // The production integration still uses verified in-cluster TLS settings.
+    kc.loadFromOptions({ clusters: [{ name: 'ci', server: `http://127.0.0.1:${server.address().port}`, skipTLSVerify: true }], users: [{ name: 'ci' }], contexts: [{ name: 'ci', cluster: 'ci', user: 'ci' }], currentContext: 'ci' });
     const result = await kc.makeApiClient(k8s.NetworkingV1Api).listIngressForAllNamespaces();
     assert.equal(result.items[0].metadata.name, 'ci-ingress');
   } finally {
