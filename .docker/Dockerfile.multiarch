@@ -21,11 +21,11 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends python3 make g++ \
     && rm -rf /var/lib/apt/lists/*
 COPY package.json package-lock.json ./
-RUN npm ci --omit=dev
+RUN npm ci --omit=dev --strict-allow-scripts
 COPY . .
 RUN mkdir -p public data \
     && cd client \
-    && npm ci \
+    && npm ci --strict-allow-scripts \
     && npm run build \
     && cd .. \
     && cp -a client/build/. public/ \

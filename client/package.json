@@ -58,5 +58,10 @@
   },
   "devDependencies": {
     "prettier": "^2.4.1"
+  },
+  "allowScripts": {
+    "core-js": false,
+    "core-js-pure": false,
+    "fsevents": false
   }
 }
