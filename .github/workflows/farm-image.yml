@@ -1,0 +1,134 @@
+name: Farm multiarch image
+on:
+  push:
+    branches: [master]
+    paths-ignore: ['**/*.md']
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: farm-image-${{ github.ref }}
+  cancel-in-progress: false
+env:
+  IMAGE: ghcr.io/sasue/flame
+jobs:
+  build:
+    if: github.repository == 'SaSue/flame'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build native image with provenance and SBOM
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: .docker/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          push: true
+          pull: true
+          tags: ${{ env.IMAGE }}:build-${{ github.sha }}-${{ matrix.arch }}
+          build-args: |
+            VCS_REF=${{ github.sha }}
+            APT_REFRESH=${{ github.run_id }}-${{ github.run_attempt }}
+          cache-from: type=gha,scope=farm-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=farm-${{ matrix.arch }}
+          provenance: mode=max
+          sbom: true
+      - name: Test the exact published image without Docker socket
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          REVISION: ${{ github.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="${IMAGE}@${DIGEST}"
+          docker pull "$ref"
+          test "$(docker image inspect "$ref" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$REVISION"
+          docker run -d --name flame-smoke --memory 256m -e PASSWORD=ci-smoke-check "$ref"
+          trap 'docker logs flame-smoke; docker rm -f flame-smoke' EXIT
+          for attempt in $(seq 1 60); do
+            if docker exec flame-smoke node -e "fetch('http://127.0.0.1:5005/').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"; then
+              break
+            fi
+            sleep 2
+          done
+          docker exec flame-smoke node -e "if(process.getuid()!==1000 || require('fs').existsSync('/var/run/docker.sock'))process.exit(1);fetch('http://127.0.0.1:5005/').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"
+          docker exec flame-smoke node --version
+      - name: Scan complete image (report, not a security guarantee)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
+          format: json
+          output: trivy-${{ matrix.arch }}.json
+          severity: CRITICAL,HIGH
+          exit-code: '0'
+        env:
+          TRIVY_USERNAME: ${{ github.actor }}
+          TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      - name: Save digest and security summary
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          mkdir -p digests
+          printf '%s\n' "$DIGEST" > "digests/$ARCH"
+          python3 - <<'PY'
+          import collections,json,os,pathlib
+          report=json.loads(pathlib.Path('trivy-'+os.environ['ARCH']+'.json').read_text())
+          counts=collections.Counter(v['Severity'] for r in report.get('Results',[]) for v in r.get('Vulnerabilities',[]))
+          with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
+              f.write('### '+os.environ['ARCH']+' image scan\n\n'+str(dict(counts))+'\n\nFull JSON is attached as an artifact. Findings require review before production deployment.\n')
+          PY
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image-${{ matrix.arch }}
+          path: |
+            digests/*
+            trivy-${{ matrix.arch }}.json
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: image-*
+          path: artifacts
+          merge-multiple: true
+      - name: Publish manifest only after both native tests and scans
+        env:
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          amd64="${IMAGE}@$(cat artifacts/digests/amd64)"
+          arm64="${IMAGE}@$(cat artifacts/digests/arm64)"
+          docker buildx imagetools create --tag "${IMAGE}:sha-${REVISION}" --tag "${IMAGE}:latest" "$amd64" "$arm64"
+          docker buildx imagetools inspect "${IMAGE}:sha-${REVISION}"
+          printf 'Published `%s:sha-%s` and `latest` for AMD64 and ARM64.\n' "$IMAGE" "$REVISION" >> "$GITHUB_STEP_SUMMARY"
