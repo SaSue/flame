@@ -22,6 +22,11 @@ async function main() {
   assert.equal(typeof token, 'string');
   const verified = await request('/api/auth/validate', { method: 'POST', body: { token } });
   assert.equal(verified.token.isValid, true);
+  const styles = '/* CI persistent styles */\nbody { --ci-test: 1; }';
+  await request('/api/config/0/css', { method: 'PUT', body: { styles } });
+  assert.equal(await request('/api/config/0/css'), styles);
+  assert.equal(await (await fetch(base + '/flame.css')).text(), styles);
+  assert.equal(require('node:fs').readFileSync('/app/data/flame.css', 'utf8'), styles);
   await request('/api/apps', { method: 'POST', body: { name: 'unauthorized' }, authenticated: false, status: 401 });
 
   const form = new FormData();
@@ -69,7 +74,7 @@ async function main() {
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
-  console.log('PASS: login/JWT, authorization, SQLite CRUD, multipart upload, private visibility, categories/bookmarks, Kubernetes SDK');
+  console.log('PASS: login/JWT, persistent CSS, authorization, SQLite CRUD, multipart upload, private visibility, categories/bookmarks, Kubernetes SDK');
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });
