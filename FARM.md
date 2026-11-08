@@ -4,28 +4,30 @@ This fork builds Flame on the supported Node 24 LTS Debian 13 slim image for
 `linux/amd64` and `linux/arm64`. Both architectures build and run smoke tests on
 native GitHub-hosted runners. The Raspberry Pi only downloads tested images.
 
-The common base stage runs `apt-get update` and `apt-get -y full-upgrade` before
-either the builder or runtime stage uses it. A per-run `APT_REFRESH` argument
-invalidates this package-update layer on every Actions run and retry. The build
-uses a pinned Node multiarch digest, npm lockfiles, commit-pinned Actions,
-an OCI source/revision label, SBOM and build provenance. Update the Node digest
-deliberately when a new supported base is selected. Package upgrades do not
-replace application dependency maintenance or vulnerability review.
+The build stages run `apt-get update` and `apt-get -y full-upgrade`, with a
+per-run `APT_REFRESH` cache key. npm 12.2.2 is used only during the build.
+The final image uses pinned `gcr.io/distroless/cc-debian13:nonroot`, Node 24,
+and UID/GID 1000. It contains no shell, APT, npm, or SQLite CLI. Updating APT
+in the builder does not update the separate distroless runtime; review its
+scanner findings and refresh its pinned digest separately.
 
-npm is pinned to 12.2.2 in the common base and checked by CI. Dependency install
-scripts are denied by default. Only the reviewed `sqlite3@6.0.1` native installer
-is permitted; unused optional/watch and donation scripts are explicitly denied.
-Both backend and frontend use `npm ci --strict-allow-scripts`, so new unreviewed
-installation hooks fail the build rather than executing automatically.
+SQLite 3.54.1 is downloaded from the official source and verified against the
+SHA3-256 in `.docker/sqlite-source.json`. The Node addon is explicitly compiled
+against that shared library; implicit backend install scripts are disabled.
+Frontend dependencies retain the reviewed install-script allowlist. CI checks
+the actual SQLite query result, loaded shared-library path, and FTS5 support.
+A separate CycloneDX SBOM records the custom SQLite library and binary hash,
+and Grype scans it in addition to the full-image Trivy scan.
 
 Published images:
 
 - `ghcr.io/sasue/flame:sha-<full commit>`: tested commit for both architectures.
-- `ghcr.io/sasue/flame:latest`: last successful multiarch build.
+- `ghcr.io/sasue/flame:latest`: last successful master build.
+- `ghcr.io/sasue/flame:candidate-minimal`: tested feature-branch candidate; does not update latest.
 
 Production should use the verified commit tag or digest. The `latest` tag is a
 convenience pointer, not a guarantee of security. Each architecture includes a
-Trivy report for HIGH/CRITICAL findings. Reports must be reviewed before
+Trivy report for all severity levels. Reports must be reviewed before
 deployment. Any CRITICAL finding blocks publication of the multiarch manifest
 and `latest`; the full scan reports are retained as workflow artifacts.
 
@@ -35,6 +37,10 @@ and the actual current Kubernetes client against a credential-free local mock.
 The Kubernetes mock uses HTTP only on loopback inside the disposable container;
 production in-cluster TLS verification is unchanged. The runtime is also checked
 for UID 1000, lack of a Docker socket, and the expected source revision.
+
+CI runs the container with a read-only root filesystem, all capabilities dropped,
+no network, and no-new-privileges. Custom CSS is served from `/app/data/flame.css`
+so it remains editable without writing to the application directory.
 
 The runtime uses UID/GID 1000 and a HTTP healthcheck. The persistent data directory
 must be writable by that account. No root startup `chown` is performed. Docker
@@ -47,6 +53,11 @@ services:
   flame:
     image: ghcr.io/sasue/flame:sha-<verified-commit>
     env_file: /path/to/protected/flame.env
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m
     volumes:
       - /path/to/flame-data:/app/data
     deploy:

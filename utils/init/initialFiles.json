@@ -8,7 +8,7 @@
       },
       "paths": {
         "src": "../../data",
-        "dest": "../../public"
+        "dest": "../../data"
       },
       "template": "",
       "isJSON": false

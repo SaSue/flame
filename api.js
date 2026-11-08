@@ -5,6 +5,10 @@ const { errorHandler } = require('./middleware');
 const api = express();
 
 // Static files
+// Custom styles belong to the writable data volume, not the immutable app tree.
+api.get('/flame.css', (req, res) => {
+  res.sendFile(join(__dirname, 'data/flame.css'));
+});
 api.use(express.static(join(__dirname, 'public')));
 api.use('/uploads', express.static(join(__dirname, 'data/uploads')));
 api.get(/^\/(?!api)/, (req, res) => {

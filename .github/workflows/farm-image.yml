@@ -1,7 +1,7 @@
 name: Farm multiarch image
 on:
   push:
-    branches: [master]
+    branches: [master, security/sqlite-minimal-runtime]
     paths-ignore: ['**/*.md']
   workflow_dispatch:
 permissions:
@@ -63,7 +63,7 @@ jobs:
           ref="${IMAGE}@${DIGEST}"
           docker pull "$ref"
           test "$(docker image inspect "$ref" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" = "$REVISION"
-          docker run -d --name flame-smoke --memory 256m -e PASSWORD=ci-smoke-check "$ref"
+          docker run -d --name flame-smoke --memory 256m --network none --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:rw,noexec,nosuid,size=16m --tmpfs /app/data:rw,nosuid,size=64m,uid=1000,gid=1000 -e PASSWORD=ci-smoke-check "$ref"
           trap 'docker logs flame-smoke; docker rm -f flame-smoke' EXIT
           for attempt in $(seq 1 60); do
             if docker exec flame-smoke node -e "fetch('http://127.0.0.1:5005/').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"; then
@@ -74,7 +74,9 @@ jobs:
           done
           docker exec flame-smoke node -e "if(process.getuid()!==1000 || require('fs').existsSync('/var/run/docker.sock'))process.exit(1);fetch('http://127.0.0.1:5005/').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"
           docker exec flame-smoke node --version
-          test "$(docker exec flame-smoke npm --version)" = "12.2.2"
+          docker exec flame-smoke node scripts/ci-runtime.js
+          docker cp flame-smoke:/usr/share/flame/sqlite.cdx.json sqlite-${{ matrix.arch }}.cdx.json
+          docker cp flame-smoke:/usr/share/flame/build-info.json sqlite-build-${{ matrix.arch }}.json
           docker exec flame-smoke node scripts/ci-integration.js
       - name: Scan complete image (report, not a security guarantee)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -82,11 +84,23 @@ jobs:
           image-ref: ${{ env.IMAGE }}@${{ steps.build.outputs.digest }}
           format: json
           output: trivy-${{ matrix.arch }}.json
-          severity: CRITICAL,HIGH
           exit-code: '0'
         env:
           TRIVY_USERNAME: ${{ github.actor }}
           TRIVY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
+      - name: Independently scan the custom SQLite component by CPE
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          scanner=anchore/grype:v0.118.0@sha256:8a93fc48da96bd6ec5981279d099b69de11541dc68fdf222fb9161f8ff284af7
+          for attempt in 1 2 3; do
+            if docker run --rm -e GRYPE_CHECK_FOR_APP_UPDATE=false --mount "type=bind,source=$PWD/sqlite-${ARCH}.cdx.json,target=/work/sqlite.cdx.json,readonly" "$scanner" sbom:/work/sqlite.cdx.json --output json > "grype-sqlite-${ARCH}.json"; then
+              exit 0
+            fi
+            sleep "$((attempt * 5))"
+          done
+          exit 1
       - name: Save digest and security summary
         env:
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -101,12 +115,16 @@ jobs:
           with open(os.environ['GITHUB_STEP_SUMMARY'],'a') as f:
               f.write('### '+os.environ['ARCH']+' image scan\n\n'+str(dict(counts))+'\n\nFull JSON is attached as an artifact. Findings require review before production deployment.\n')
           PY
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: image-${{ matrix.arch }}
           path: |
             digests/*
             trivy-${{ matrix.arch }}.json
+            sqlite-${{ matrix.arch }}.cdx.json
+            sqlite-build-${{ matrix.arch }}.json
+            grype-sqlite-${{ matrix.arch }}.json
       - name: Reject images with critical vulnerability findings
         env:
           ARCH: ${{ matrix.arch }}
@@ -115,7 +133,10 @@ jobs:
           import json,os,pathlib
           report=json.loads(pathlib.Path('trivy-'+os.environ['ARCH']+'.json').read_text())
           critical=[v for r in report.get('Results',[]) for v in r.get('Vulnerabilities',[]) if v['Severity']=='CRITICAL']
-          assert not critical, 'Critical vulnerability findings: '+str([(v['PkgName'],v['VulnerabilityID']) for v in critical])
+          native=json.loads(pathlib.Path('grype-sqlite-'+os.environ['ARCH']+'.json').read_text())
+          assert 'matches' in native, 'Missing native-library scan result'
+          native_critical=[v for v in native['matches'] if v['vulnerability']['severity'].lower()=='critical']
+          assert not critical and not native_critical, 'Critical findings: '+str([(v['PkgName'],v['VulnerabilityID']) for v in critical])+str(native_critical)
           PYSCAN
   publish:
     needs: build
@@ -138,10 +159,11 @@ jobs:
       - name: Publish manifest only after both native tests and scans
         env:
           REVISION: ${{ github.sha }}
+          CHANNEL: ${{ github.ref == 'refs/heads/master' && 'latest' || 'candidate-minimal' }}
         run: |
           set -euo pipefail
           amd64="${IMAGE}@$(cat artifacts/digests/amd64)"
           arm64="${IMAGE}@$(cat artifacts/digests/arm64)"
-          docker buildx imagetools create --tag "${IMAGE}:sha-${REVISION}" --tag "${IMAGE}:latest" "$amd64" "$arm64"
+          docker buildx imagetools create --tag "${IMAGE}:sha-${REVISION}" --tag "${IMAGE}:${CHANNEL}" "$amd64" "$arm64"
           docker buildx imagetools inspect "${IMAGE}:sha-${REVISION}"
-          printf 'Published `%s:sha-%s` and `latest` for AMD64 and ARM64.\n' "$IMAGE" "$REVISION" >> "$GITHUB_STEP_SUMMARY"
+          printf 'Published `%s:sha-%s` and `%s` for AMD64 and ARM64.\n' "$IMAGE" "$REVISION" "$CHANNEL" >> "$GITHUB_STEP_SUMMARY"

@@ -12,7 +12,7 @@ const createFile = async (file) => {
 
   // Check if file exists
   if (fs.existsSync(srcPath)) {
-    fs.copyFileSync(srcPath, destPath);
+    if (srcPath !== destPath) fs.copyFileSync(srcPath, destPath);
 
     if (process.env.NODE_ENV == 'development') {
       logger.log(msg.found);
